@@ -1,8 +1,6 @@
-# [Mapping Inflammatory Responses in Human Lung Transplants at Single Cell Resolution] (manuscript in preparation)
+# [Ischemia Reperfusion Responses in Human Lung Transplants at the Single Cell Resolution] 
 
-Aaron Wong, et al.
-
-Manuscript in preparation. A portion of the code used for analysis is published here. 
+Manuscript in preparation. the code used for analysis is published here. 
 
 
 
