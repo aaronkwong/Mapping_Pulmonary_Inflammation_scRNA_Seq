@@ -1,36 +1,51 @@
-# This script takes our seurat object containing all cells from our experiment and splits them up into two seurat objects, one for pre and for post. The pre timepoint contains only donor lung cells. The post object contains a mixture of donor and recipient cells. CellChat is then run on the pre and post timepoints.
-
-suppressPackageStartupMessages(library(renv))
-renv::activate()
 suppressPackageStartupMessages(library(optparse))
-library(CellChat)
-library(trqwe)
-library(Seurat)
-future::plan("multiprocess", workers = 16) 
-source("gdpath.R")
 
 option_list <- list(
     make_option(c("-t", "--seurat_object_path_with_recip_cells"), default="NA",
-        help="a seurat object with the recipient cells. This algo will seperate out the recip cells from meta data and give them a seperate cluster"),  
+        help="a seurat object with the recipient cells. This algo will seperate out the recip cells from meta data and give them a seperate cluster"),
+  #
+    make_option(c("-x", "--cluster_resolution"), default="NA",
+        help=""),
+  #
+    make_option(c("-y", "--include_recip"), default="NA",
+        help=""),
 	make_option(c("-b", "--clusters_containing_recip_cells"), default="NA",
         help="MAKE SURE clusters are in ascending order and this matches the manual anno with recip in the manual_changes folder"),
     make_option(c("-a", "--root"), default="NA",
-    	help="The directory where the various result directories for each part of the pipeline will be written to."),   
+    	help=""),   
+  #
     make_option(c("-p", "--root_external"), default="NA",
-        help="TRUE or FALSE. If the root is contatined in the cloud synced folder."),
+        help=""),
+  #
     make_option(c("-c", "--project_name"), default="NA",
-        help="A name for the project.")
+        help="")
   )
 
 opt <- parse_args(OptionParser(option_list=option_list))
 
+library(CellChat)
+library(trqwe)
+library(Seurat)
+future::plan("multiprocess", workers = 16) # do parallel
+# options(future.fork.multithreading.enable = FALSE)
+source("gdpath.R")
+
+#read vars
 root<-opt$root
+cluster_resolution<-opt$cluster_resolution
 project_name<-opt$project_name
 seurat_object_path_with_recip_cells<-opt$seurat_object_path_with_recip_cells
 clusters_expected_to_contain_recip_cells<-as.numeric(unlist(strsplit(x=opt$clusters_containing_recip_cells,split=",")))
 if(any(is.na(clusters_expected_to_contain_recip_cells))){
 	cat("error. one of the clusters input as containing recipient cells is not an integer.\n")
 	quit()
+}
+
+#check whether recipient cells should be included in analysis
+if (opt$include_recip=="TRUE"){
+  include_recip<-TRUE
+}else{
+  include_recip<-FALSE
 }
 
 #convert text input to logical for root_external
@@ -46,14 +61,28 @@ if(opt$root_external=="TRUE"){
 subroot<-paste0(root,"cellchat/")
 dir.create(subroot)
 
-
-#this is based off the tutorial found at: 
-# https://htmlpreview.github.io/?https://github.com/sqjin/CellChat/blob/master/tutorial/CellChat-vignette.html
-
 #read in the seurat object, which should be the QC (doublet removed object)
-seurat_object_with_recipient_raw<-mcreadRDS(seurat_object_path_with_recip_cells)
-seurat_object_with_recipient<-seurat_object_with_recipient_raw[,seurat_object_with_recipient_raw$timepoint=="post"]
-seurat_object_pre<-seurat_object_with_recipient_raw[,seurat_object_with_recipient_raw$timepoint=="pre"]
+seurat_object<-mcreadRDS(seurat_object_path_with_recip_cells)
+
+
+#the pathway analysis function takes the seurat object and for every cluster in the metadata column called "integrated_clusters" computes differential gene expression between CIT and 2hR timepoints.
+#to reproduce the differential gene expression results in the paper of donor cell types between CIT and 2hR we should use the "_lowcluster" metadata
+if (cluster_resolution=="low"){
+    seurat_object@meta.data[,"integrated_clusters"]<-seurat_object@meta.data[,"integrated_clusters_lowcluster"]
+    seurat_object@meta.data[,"integrated_clusters_recipient_origin"]<-seurat_object@meta.data[,"integrated_clusters_recipient_origin_lowcluster"]
+    seurat_object@meta.data[,"GSVA_anno_labels"]<-seurat_object@meta.data[,"GSVA_anno_labels_lowcluster"]
+    seurat_object@meta.data[,"GSVA_anno_labels_nickname"]<-seurat_object@meta.data[,"GSVA_anno_labels_nickname_lowcluster"]
+}else{
+    stop("Error. This analysis should only be at low resolution")
+}
+
+#should recipient cells be included in the analysis?
+if (include_recip==FALSE){
+    seurat_object<-seurat_object[,seurat_object@meta.data$recipient_origin==FALSE]
+}
+
+seurat_object_with_recipient<-seurat_object[,seurat_object$timepoint=="post"]
+seurat_object_pre<-seurat_object[,seurat_object$timepoint=="pre"]
 
 # we need to clean cells. There may be some clusters that contain a single called recipient cell. We need to specify the cluster in which
 # we are expecting recipient cells. Clusters that we dont have expect recipient cells in should have those "recipient" cells removed.
@@ -93,17 +122,10 @@ if(file.exists(manual_anno_with_dr)){
 }
 
 
-
-
 #factor the new labels
-# integrated_clusters<-factor(integrated_clusters)
-# levels(integrated_clusters)<-as.character(seq(from=0,to=length(unique(integrated_clusters))-1,by=1))
 #use new factored labels and overwrite old integrated labels
 seurat_object_with_recipient_clean<-AddMetaData(object=seurat_object_with_recipient_clean, metadata=integrated_clusters, col.name = "integrated_clusters")
 seurat_object_with_recipient_clean@meta.data$integrated_clusters<-integrated_clusters
-
-#print old and new seurat objects. Only clusters that contain recipient cells should have the number of cells change
-table(seurat_object_with_recipient_clean@meta.data$integrated_clusters)
 
 
 # we need to redo the labels on the 
@@ -120,7 +142,6 @@ if(file.exists(manual_anno_with_dr)){
 }
 seurat_object_pre<-AddMetaData(object=seurat_object_pre, metadata=integrated_clusters_pre, col.name = "integrated_clusters")
 
-# collapse cell chat run steps into a single function
 run_cell_chat<-function(seurat_object){
 	#log normalized data with pseudocount of 1 (this is log1p)
 	data.input <- seurat_object@assays$SCT@data
@@ -162,6 +183,5 @@ run_cell_chat<-function(seurat_object){
 	return(cellchat)
 }
 
-#save the two cell chat results for the post timepoint and the pre timepoint
 mcsaveRDS(run_cell_chat(seurat_object=seurat_object_with_recipient_clean),file=gdpath(paste0(project_name,"_post_with_recipient_cellchat.rds"),root=subroot,external=root_external))
 mcsaveRDS(run_cell_chat(seurat_object=seurat_object_pre),file=gdpath(paste0(project_name,"_pre_cellchat.rds"),root=subroot,external=root_external))
